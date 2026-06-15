@@ -16,6 +16,7 @@ Usa [Whisper](https://github.com/openai/whisper) de OpenAI corriendo **local**:
 - 🔒 **Privado.** Tu voz nunca sale de tu computadora. No hay servidor, no hay API, no hay cuenta.
 - 💸 **Gratis y para siempre.** Software libre (MIT). Cero suscripción.
 - ✍️ **Escribe bien.** Puntuación, mayúsculas y signos `¿?` correctos. Le podés enseñar tus palabras (nombres propios, términos técnicos) para que no las escriba mal.
+- 📑 **Texto ordenado, no un choclo.** Aunque hables seguido, te separa el dictado en **párrafos cortos y legibles**. Listo para pegar en WhatsApp, Notion o un mail — y entra como un solo mensaje, sin cortarse.
 - 🌎 **Pensado para el español** (incluido el voseo argentino), pero configurable a cualquier idioma de Whisper.
 
 ---

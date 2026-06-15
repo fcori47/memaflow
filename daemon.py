@@ -116,6 +116,9 @@ MLX_MODEL = _cfgget("MLX_MODEL", "mlx-community/whisper-large-v3-turbo")
 INITIAL_PROMPT = _cfgget("INITIAL_PROMPT", None)
 CONDITION_ON_PREVIOUS_TEXT = _cfgget("CONDITION_ON_PREVIOUS_TEXT", False)
 HALLUCINATION_BLACKLIST = _cfgget("HALLUCINATION_BLACKLIST", [])
+# Estructurar el texto en parrafos cortos legibles (no un solo choclo).
+STRUCTURE_PARAGRAPHS = _cfgget("STRUCTURE_PARAGRAPHS", True)
+PARAGRAPH_MAX_CHARS = _cfgget("PARAGRAPH_MAX_CHARS", 220)
 
 # ----------------------------------------------------------------------------
 # Logging
@@ -475,7 +478,34 @@ def _postprocess(text: str) -> str:
     out = re.sub(r"\n{3,}", "\n\n", out).strip()
     if out and out[0].islower():
         out = out[0].upper() + out[1:]
+    if STRUCTURE_PARAGRAPHS:
+        out = _structure_text(out, PARAGRAPH_MAX_CHARS)
     return out
+
+
+def _structure_text(text: str, max_chars: int) -> str:
+    """Reparte el texto en parrafos cortos y legibles (no un solo choclo).
+    Respeta los cortes que ya existen (pausas largas -> doble enter) y dentro
+    de cada bloque agrupa oraciones hasta ~max_chars, cortando en el punto/
+    pregunta mas cercano. No reescribe ni recapitaliza palabras."""
+    import re
+    blocks = [b.strip() for b in text.split("\n\n") if b.strip()]
+    out_paras: list[str] = []
+    for block in blocks:
+        # dividir en oraciones: despues de . ? ! … seguido de espacio
+        sentences = [s.strip() for s in re.split(r"(?<=[.?!…])\s+", block) if s.strip()]
+        if not sentences:
+            continue
+        cur = ""
+        for s in sentences:
+            if cur and len(cur) + 1 + len(s) > max_chars:
+                out_paras.append(cur)
+                cur = s
+            else:
+                cur = f"{cur} {s}".strip() if cur else s
+        if cur:
+            out_paras.append(cur)
+    return "\n\n".join(out_paras)
 
 
 def _transcribe(audio: np.ndarray) -> str:
@@ -553,8 +583,11 @@ def paste_text(text: str) -> None:
     # Pequeno delay para asegurar que la app focuseada este lista
     time.sleep(0.05)
 
-    if len(text) > TYPE_THRESHOLD_CHARS:
-        # Fallback clipboard + Ctrl+V para textos largos (tipeo seria lento)
+    if len(text) > TYPE_THRESHOLD_CHARS or "\n" in text:
+        # Clipboard + Cmd/Ctrl+V para textos largos O con saltos de linea.
+        # Clave para multi-parrafo: tipear "\n" manda Enter, y en apps de chat
+        # (WhatsApp, Slack) Enter ENVIA el mensaje -> lo cortaria. Pegar respeta
+        # los saltos como parte del texto, en un solo mensaje.
         try:
             previous_clip = ""
             try:

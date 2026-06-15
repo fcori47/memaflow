@@ -85,3 +85,9 @@ BEEP_ERROR_FREQ = 440
 # umbral (segundos), se inserta un doble enter (parrafo nuevo).
 PARAGRAPH_PAUSE_SEC = 1.5
 PARAGRAPH_SEPARATOR = "\n\n"
+
+# Estructurar la salida en parrafos cortos y legibles (no un solo choclo gigante).
+# True = agrupa oraciones hasta PARAGRAPH_MAX_CHARS y separa con linea en blanco.
+# Ideal para pegar en WhatsApp/Notion/mail. False = texto corrido.
+STRUCTURE_PARAGRAPHS = True
+PARAGRAPH_MAX_CHARS = 220
