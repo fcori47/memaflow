@@ -1,0 +1,22 @@
+# Entorno virtual
+.venv/
+venv/
+env/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+
+# Logs y temporales
+logs/
+*.log
+
+# Modelos descargados (se bajan solos al primer uso)
+models/
+*.mlx
+
+# macOS / editores
+.DS_Store
+.idea/
+.vscode/
