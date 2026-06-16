@@ -27,24 +27,22 @@ _IS_MAC = sys.platform == "darwin"
 # Fuente segun plataforma (solo Windows/tk)
 _FONT_UI = "Helvetica Neue" if _IS_MAC else "Segoe UI"
 
-# ---- Estilo Basdonax ----
-BG = "#09090b"          # negro de fondo
-BAR_COLOR = "#f97316"   # naranja Basdonax
-BAR_DIM = "#3f3f46"     # gris para barras inactivas
-TEXT_COLOR = "#fafafa"
-ACCENT_REC = "#22c55e"  # verde "grabando"
-ACCENT_TRANS = "#eab308"  # amarillo "transcribiendo"
+# ---- Overlay IDENTICO al de macOS (mismos colores y geometria que OverlayMac) ----
+# Colores tomados literalmente de _PillView.drawRect_ (mas abajo):
+BG = "#09090b"           # pill: RGB(0.035, 0.035, 0.043)
+RIM = "#1f1f24"          # rim sutil: blanco @ 0.085 sobre el fondo
+REC_COLOR = "#fffbf6"    # barras al grabar: blanco calido (1.0, 0.985, 0.965)
+TRANS_COLOR = "#ebb30d"  # barras al transcribir: ambar (0.92, 0.70, 0.05)
 
-WIDTH = 320
-HEIGHT = 58
-TASKBAR_GAP = 12        # px sobre la barra de tareas
-BAR_COUNT = 24
-BAR_W = 4
-BAR_GAP = 4
-BAR_MAX_H = 32
-BAR_MIN_H = 3
-PADDING_X = 18
-RADIUS = 18             # esquinas redondeadas (pill)
+# Geometria EXACTA del overlay de Mac (ver MAC_W / MAC_H / MAC_BARS ... abajo).
+WIDTH = 168             # = MAC_W
+HEIGHT = 44             # = MAC_H
+TASKBAR_GAP = 14        # = MAC_DOCK_GAP (px sobre la barra de tareas)
+BAR_COUNT = 26          # = MAC_BARS
+BAR_W = 2.6             # = MAC_BAR_W
+BAR_GAP = 2.6           # = MAC_BAR_GAP
+BAR_MIN_H = 3.0
+RADIUS = 22             # = HEIGHT / 2 (pill completa, como en Mac)
 
 
 # ===========================================================================
@@ -55,6 +53,7 @@ class OverlayTk:
         import tkinter as tk  # import diferido
         self._tk = tk
         self._amp = 0.0
+        self._pulse = 0.0  # fase del pulso al transcribir (= OverlayMac._pulse)
         self._smoothed: deque[float] = deque([0.0] * BAR_COUNT, maxlen=BAR_COUNT)
         self._state = "IDLE"
         self._root = None
@@ -92,7 +91,7 @@ class OverlayTk:
         self._root.withdraw()
         self._root.overrideredirect(True)
         self._root.attributes("-topmost", True)
-        self._root.attributes("-alpha", 0.94)
+        self._root.attributes("-alpha", 0.93)  # = alpha del pill de Mac (0.93)
         TRANSPARENT = "#010203"
         try:
             self._root.attributes("-transparentcolor", TRANSPARENT)
@@ -123,7 +122,9 @@ class OverlayTk:
     def _draw_static(self) -> None:
         c = self._canvas
         c.delete("all")
-        self._round_rect(c, 0, 0, WIDTH, HEIGHT, RADIUS, fill=BG, outline="")
+        # rim tenue (como el "rim light" del overlay de Mac): pill rim + pill BG 1px adentro.
+        self._round_rect(c, 0, 0, WIDTH, HEIGHT, RADIUS, fill=RIM, outline="")
+        self._round_rect(c, 1, 1, WIDTH - 1, HEIGHT - 1, RADIUS - 1, fill=BG, outline="")
 
     def _round_rect(self, canvas, x1, y1, x2, y2, r, **kw) -> None:
         canvas.create_arc(x1, y1, x1 + 2 * r, y1 + 2 * r, start=90, extent=90, style="pieslice", **kw)
@@ -140,6 +141,7 @@ class OverlayTk:
         if new_state == "IDLE":
             self._root.withdraw()
             self._smoothed = deque([0.0] * BAR_COUNT, maxlen=BAR_COUNT)
+            self._pulse = 0.0
         else:
             self._root.deiconify()
             self._root.lift()
@@ -151,44 +153,55 @@ class OverlayTk:
                 self._render_frame()
         except Exception:
             pass
-        self._root.after(33, self._tick)
+        self._root.after(16, self._tick)  # ~60 fps (= MAC_FPS)
+
+    @staticmethod
+    def _lerp_color(c1: str, c2: str, t: float) -> str:
+        """Interpola dos colores hex (#rrggbb) segun t en [0,1]."""
+        t = max(0.0, min(1.0, t))
+        a = (int(c1[1:3], 16), int(c1[3:5], 16), int(c1[5:7], 16))
+        b = (int(c2[1:3], 16), int(c2[3:5], 16), int(c2[5:7], 16))
+        r = tuple(int(a[k] + (b[k] - a[k]) * t) for k in range(3))
+        return f"#{r[0]:02x}{r[1]:02x}{r[2]:02x}"
 
     def _render_frame(self) -> None:
         c = self._canvas
         self._draw_static()
+
+        # --- _advance: identico a OverlayMac._advance ---
         if self._state == "RECORDING":
-            level = self._amp
+            lv = self._amp
         else:
-            t = time.time()
-            level = 0.25 + 0.15 * abs((t * 2) % 2 - 1)
-        level = max(level, 0.05 if self._state == "RECORDING" else level)
-        self._smoothed.append(level)
+            self._pulse += 0.16
+            lv = 0.16 + 0.13 * abs(math.sin(self._pulse))
+        self._smoothed.append(max(lv, 0.04))
 
-        if self._state == "RECORDING":
-            label = "Escuchando"
-            accent = ACCENT_REC
-            bar_color = BAR_COLOR
-        else:
-            label = "Transcribiendo..."
-            accent = ACCENT_TRANS
-            bar_color = ACCENT_TRANS
-
-        text_x = WIDTH - PADDING_X
-        c.create_oval(text_x - 90, HEIGHT // 2 - 4, text_x - 82, HEIGHT // 2 + 4, fill=accent, outline="")
-        c.create_text(text_x, HEIGHT // 2, text=label, fill=TEXT_COLOR, anchor="e", font=(_FONT_UI, 9, "normal"))
-
-        bars_area_w = (WIDTH // 2) - PADDING_X
-        n_bars = min(BAR_COUNT, bars_area_w // (BAR_W + BAR_GAP))
-        levels = list(self._smoothed)[-n_bars:]
-        if not levels:
+        # --- dibujado: identico a _PillView.drawRect_ ---
+        # tkinter no tiene alpha por figura => simulamos el alpha de cada barra
+        # mezclando su color contra el fondo del pill (la ventana ya va al 93%).
+        transcribing = self._state == "TRANSCRIBING"
+        levels = list(self._smoothed)          # historial scrolleando (26 valores)
+        n = len(levels)
+        if n == 0:
             return
-        start_x = PADDING_X
-        cy = HEIGHT // 2
+        total = n * BAR_W + (n - 1) * BAR_GAP
+        x0 = (WIDTH - total) / 2.0
+        cy = HEIGHT / 2.0
+        min_h = BAR_MIN_H
+        max_h = HEIGHT - 16.0
+
         for i, lv in enumerate(levels):
-            h = BAR_MIN_H + lv * (BAR_MAX_H - BAR_MIN_H)
-            x = start_x + i * (BAR_W + BAR_GAP)
-            color = bar_color if lv > 0.08 else BAR_DIM
-            c.create_rectangle(x, cy - h / 2, x + BAR_W, cy + h / 2, fill=color, outline="")
+            v = max(0.0, min(1.0, lv))
+            bh = min_h + v * (max_h - min_h)
+            x = x0 + i * (BAR_W + BAR_GAP) + BAR_W / 2.0
+            if transcribing:
+                color = self._lerp_color(BG, TRANS_COLOR, 0.95)
+            else:
+                a = 0.42 + 0.55 * v
+                color = self._lerp_color(BG, REC_COLOR, a)
+            # Linea vertical con puntas redondeadas (= barra de radio MAC_BAR_W/2).
+            c.create_line(x, cy - bh / 2, x, cy + bh / 2,
+                          fill=color, width=BAR_W, capstyle="round")
 
 
 # ===========================================================================
