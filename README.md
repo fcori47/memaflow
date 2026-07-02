@@ -39,9 +39,15 @@ La primera vez, macOS te va a pedir permisos (una sola vez):
 
 ### Windows (NVIDIA o CPU)
 
-1. Instalá [Python 3.10+](https://www.python.org/downloads/) (tildá **"Add Python to PATH"**).
-2. Doble clic en `install.bat` (crea el entorno e instala todo).
-3. Doble clic en `iniciar_dictado.bat`.
+En Windows MemaFlow se instala y se deja andando con **Claude Code** (crea el entorno, instala las dependencias y configura el autostart). A mano:
+
+```powershell
+git clone https://github.com/fcori47/memaflow.git
+cd memaflow
+python -m venv .venv
+.venv\Scripts\pip install -r requirements.txt
+.venv\Scripts\pythonw daemon.py
+```
 
 Con GPU NVIDIA usa el modelo `large-v3-turbo`. Sin GPU, cambiá en `config.py` a `WHISPER_MODEL = "small"`.
 
@@ -78,7 +84,7 @@ Todo se configura en `config.py` (Windows) o `config_mac.py` (Mac):
 ## 🔁 Que arranque solo al prender la PC
 
 - **Mac:** Ajustes del Sistema → General → **Ítems de inicio** → `+` → elegí `iniciar_dictado_mac.sh`.
-- **Windows:** `Win + R` → escribí `shell:startup` → pegá un acceso directo a `iniciar_dictado.bat`.
+- **Windows:** el autostart lo deja configurado Claude Code (un atajo en `shell:startup` → `pythonw daemon.py`). MemaFlow trae un **candado de instancia única**: aunque el arranque se dispare dos veces, nunca corren dos daemons a la vez (si no, se pisan el texto y transcriben cualquier cosa).
 
 ---
 

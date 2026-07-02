@@ -111,6 +111,9 @@ except Exception:
 def _cfgget(name, default):
     return getattr(_cfg, name, default) if _cfg is not None else default
 
+# Permitir definir la preferencia de microfono tambien en config.py (Windows/Linux).
+INPUT_DEVICE_PREFERENCE = _cfgget("INPUT_DEVICE_PREFERENCE", INPUT_DEVICE_PREFERENCE)
+
 WHISPER_BACKEND = _cfgget("WHISPER_BACKEND", "faster")
 MLX_MODEL = _cfgget("MLX_MODEL", "mlx-community/whisper-large-v3-turbo")
 INITIAL_PROMPT = _cfgget("INITIAL_PROMPT", None)
@@ -119,6 +122,28 @@ HALLUCINATION_BLACKLIST = _cfgget("HALLUCINATION_BLACKLIST", [])
 # Estructurar el texto en parrafos cortos legibles (no un solo choclo).
 STRUCTURE_PARAGRAPHS = _cfgget("STRUCTURE_PARAGRAPHS", True)
 PARAGRAPH_MAX_CHARS = _cfgget("PARAGRAPH_MAX_CHARS", 220)
+
+# Refinamiento v3 (pule el dictado como contenido). Defaults seguros si el
+# config de la plataforma no los define (config viejo -> "off" = comportamiento v2).
+REFINE_BACKEND = _cfgget("REFINE_BACKEND", "off")
+REFINE_MODEL = _cfgget("REFINE_MODEL", "qwen2.5:3b")
+REFINE_OLLAMA_URL = _cfgget("REFINE_OLLAMA_URL", "http://localhost:11434")
+REFINE_TIMEOUT = _cfgget("REFINE_TIMEOUT", 20.0)
+REFINE_USE_APP_CONTEXT = _cfgget("REFINE_USE_APP_CONTEXT", False)
+REFINE_FILLERS = _cfgget("REFINE_FILLERS", [])
+REFINE_KEEP_ALIVE = _cfgget("REFINE_KEEP_ALIVE", "30m")
+REFINE_TERMS = _cfgget("REFINE_TERMS", {})
+REFINE_UPPERCASE = _cfgget("REFINE_UPPERCASE", [])
+REFINE_SPANISH_MARKS = _cfgget("REFINE_SPANISH_MARKS", True)
+REFINE_SPOKEN_PUNCT = _cfgget("REFINE_SPOKEN_PUNCT", False)
+REFINE_DETECT_QUESTIONS = _cfgget("REFINE_DETECT_QUESTIONS", False)
+# Estas CAMBIAN/BORRAN palabras -> default off (MemaFlow solo deja lindo el texto).
+REFINE_DICTIONARY = _cfgget("REFINE_DICTIONARY", False)
+REFINE_AUTOCORRECT = _cfgget("REFINE_AUTOCORRECT", False)
+REFINE_PERCENT = _cfgget("REFINE_PERCENT", False)
+# Parametros del decoder de faster-whisper (reducen alucinaciones/loops en origen).
+WHISPER_NO_REPEAT_NGRAM = _cfgget("WHISPER_NO_REPEAT_NGRAM", 3)
+WHISPER_HOTWORDS = _cfgget("WHISPER_HOTWORDS", "")
 
 # ----------------------------------------------------------------------------
 # Logging
@@ -214,6 +239,19 @@ def _load_mlx() -> bool:
 def load_model() -> None:
     """Prepara el backend elegido. Se llama al arrancar (thread aparte)."""
     global _backend
+    # Precalentar el LLM de refinamiento en paralelo (igual que el modelo de voz:
+    # se deja caliente al arrancar). Asi el primer dictado no paga el arranque en frio.
+    if REFINE_BACKEND in ("auto", "ollama"):
+        try:
+            import refine as _refine_mod
+            threading.Thread(
+                target=_refine_mod.warm,
+                kwargs={"model": REFINE_MODEL, "ollama_url": REFINE_OLLAMA_URL,
+                        "keep_alive": REFINE_KEEP_ALIVE, "log": log},
+                daemon=True,
+            ).start()
+        except Exception as e:
+            log(f"No pude precalentar el refinador: {e}")
     with _model_lock:
         if _backend == "mlx":
             if _load_mlx():
@@ -508,6 +546,43 @@ def _structure_text(text: str, max_chars: int) -> str:
     return "\n\n".join(out_paras)
 
 
+def _finalize(raw_text: str) -> str:
+    """Limpieza de formato (_postprocess) y, si esta activo, REFINAMIENTO v3
+    (pule el dictado como contenido: muletillas, falsos arranques, puntuacion).
+    El refinamiento es no-bloqueante a prueba de fallos: ante cualquier problema
+    devuelve el texto sin refinar (nunca arruina un dictado)."""
+    text = _postprocess(raw_text)
+    if not text or REFINE_BACKEND == "off":
+        return text
+    try:
+        import refine as _refine_mod
+        app = _refine_mod.active_app() if REFINE_USE_APP_CONTEXT else None
+        out = _refine_mod.refine(
+            text,
+            backend=REFINE_BACKEND,
+            model=REFINE_MODEL,
+            ollama_url=REFINE_OLLAMA_URL,
+            timeout=REFINE_TIMEOUT,
+            app=app,
+            language=WHISPER_LANGUAGE,
+            extra_fillers=REFINE_FILLERS,
+            extra_terms=REFINE_TERMS,
+            extra_uppercase=REFINE_UPPERCASE,
+            spanish_marks=REFINE_SPANISH_MARKS,
+            spoken_punct=REFINE_SPOKEN_PUNCT,
+            detect_questions=REFINE_DETECT_QUESTIONS,
+            dictionary=REFINE_DICTIONARY,
+            autocorrect=REFINE_AUTOCORRECT,
+            percent=REFINE_PERCENT,
+            keep_alive=REFINE_KEEP_ALIVE,
+            log=log,
+        )
+        return out or text
+    except Exception as e:
+        log(f"Refinamiento fallo (uso texto sin refinar): {e}")
+        return text
+
+
 def _transcribe(audio: np.ndarray) -> str:
     """Transcribe el audio con el backend activo (MLX->fallback faster-whisper).
     Devuelve el texto final ya con parrafos y post-proceso."""
@@ -526,14 +601,13 @@ def _transcribe(audio: np.ndarray) -> str:
             )
             segs = [(s.get("start", 0.0), s.get("end", 0.0), s.get("text", ""))
                     for s in r.get("segments", [])]
-            return _postprocess(_segments_to_text(segs))
+            return _finalize(_segments_to_text(segs))
         except Exception as e:
             log(f"MLX transcribe fallo, caigo a faster-whisper: {e}")
             _backend = "faster"
 
     model = _load_faster_whisper()
-    segments_iter, _info = model.transcribe(
-        audio,
+    fw_kwargs = dict(
         language=WHISPER_LANGUAGE,
         beam_size=WHISPER_BEAM_SIZE,
         initial_prompt=INITIAL_PROMPT,
@@ -542,8 +616,20 @@ def _transcribe(audio: np.ndarray) -> str:
         vad_parameters={"min_silence_duration_ms": 300},
         word_timestamps=False,
     )
+    if WHISPER_NO_REPEAT_NGRAM:
+        fw_kwargs["no_repeat_ngram_size"] = WHISPER_NO_REPEAT_NGRAM
+    if WHISPER_HOTWORDS:
+        fw_kwargs["hotwords"] = WHISPER_HOTWORDS
+    try:
+        segments_iter, _info = model.transcribe(audio, **fw_kwargs)
+    except TypeError as e:
+        # faster-whisper viejo: no soporta hotwords/no_repeat_ngram_size -> reintento basico
+        log(f"faster-whisper no acepta un kwarg nuevo ({e}); reintento sin hotwords/ngram")
+        for k in ("hotwords", "no_repeat_ngram_size"):
+            fw_kwargs.pop(k, None)
+        segments_iter, _info = model.transcribe(audio, **fw_kwargs)
     segs = [(s.start, s.end, s.text) for s in segments_iter]
-    return _postprocess(_segments_to_text(segs))
+    return _finalize(_segments_to_text(segs))
 
 
 def _transcribe_and_paste(audio: np.ndarray, audio_duration: float) -> None:
@@ -790,7 +876,48 @@ def build_tray() -> pystray.Icon:
 # ----------------------------------------------------------------------------
 # Main
 # ----------------------------------------------------------------------------
+# Global: mantiene vivo el candado mientras corre el proceso (si se libera, otro
+# arranque podria colarse). Handle del mutex en Windows / fd del lock en Mac.
+_SINGLE_INSTANCE_LOCK = None
+
+
+def _ensure_single_instance() -> None:
+    """Candado de instancia unica: si ya hay un MemaFlow corriendo, ESTA instancia
+    se cierra de inmediato (antes de cargar el modelo). Evita que dos daemons
+    escuchen la hotkey y peguen el texto a la vez pisandose entre si (el bug del
+    'dialecto raro': cada uno transcribe bien, pero al pegar los dos juntos queda
+    un mamarracho). Windows: named mutex. Mac/Linux: file lock. A prueba de fallos:
+    si el candado no se puede tomar por un error, NO impide el arranque normal."""
+    global _SINGLE_INSTANCE_LOCK
+    try:
+        if sys.platform == "win32":
+            import ctypes
+            from ctypes import wintypes
+            kernel32 = ctypes.windll.kernel32
+            kernel32.CreateMutexW.restype = wintypes.HANDLE
+            kernel32.CreateMutexW.argtypes = [wintypes.LPCVOID, wintypes.BOOL, wintypes.LPCWSTR]
+            # Local\ = alcance por sesion de usuario (no pide permisos de Global\).
+            handle = kernel32.CreateMutexW(None, False, "Local\\MemaFlowDaemonSingleInstance")
+            already_running = (kernel32.GetLastError() == 183)  # ERROR_ALREADY_EXISTS
+            if not handle or already_running:
+                log("Ya hay un MemaFlow corriendo -> cierro esta instancia duplicada.")
+                os._exit(0)
+            _SINGLE_INSTANCE_LOCK = handle  # NO cerrar: el mutex vive mientras el handle este abierto
+        else:
+            import fcntl
+            f = open(HERE / ".daemon.lock", "w")
+            try:
+                fcntl.flock(f.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except OSError:
+                log("Ya hay un MemaFlow corriendo -> cierro esta instancia duplicada.")
+                os._exit(0)
+            _SINGLE_INSTANCE_LOCK = f  # NO cerrar: el lock vive mientras el fd este abierto
+    except Exception as e:
+        log(f"Candado de instancia unica no disponible ({e}); sigo igual.")
+
+
 def main() -> None:
+    _ensure_single_instance()
     log("=" * 60)
     log("Dictado por voz arrancando...")
     log(f"Hotkey: {HOTKEY} (push-to-talk)")
